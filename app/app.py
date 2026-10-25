@@ -6,7 +6,8 @@ import psycopg2
 
 app = Flask(__name__)
 
-MODEL_PATH = "/model/model.pkl"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MODEL_PATH = os.environ.get("MODEL_PATH", os.path.join(BASE_DIR, "model", "model.pkl"))
 with open(MODEL_PATH, "rb") as f:
     model = pickle.load(f)
 
@@ -18,9 +19,11 @@ DB_CONFIG = {
     "sslmode": os.environ.get("DB_SSLMODE", "require"),
 }
 
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "model_version": "v1.0"})
+
 
 @app.route("/predict", methods=["POST"])
 def predict():
@@ -50,6 +53,7 @@ def predict():
         db_status = "error: " + str(e)
 
     return jsonify({"prediction": prediction, "db_status": db_status})
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

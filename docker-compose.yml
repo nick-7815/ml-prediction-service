@@ -1,12 +1,8 @@
-version: "3.8"
+version: '3.8'
 
 services:
-  ml-service:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-    image: ml-prediction-service:1.0
-    container_name: ml-service
+  ml-app:
+    image: ghcr.io/nick-7815/ml-prediction-service/ml-app:latest
     ports:
       - "5000:5000"
     environment:
@@ -15,4 +11,5 @@ services:
       - DB_USER=ml_app
       - DB_PASSWORD=${DB_PASSWORD}
       - DB_SSLMODE=require
+      - MODEL_PATH=/model/model.pkl
     restart: unless-stopped
