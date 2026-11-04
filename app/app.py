@@ -1,59 +1,75 @@
-import os
-import json
-import pickle
-from flask import Flask, request, jsonify
-import psycopg2
+from flask import Flask, request, jsonify, Response
+import psycopg2, json, os, pickle, time
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 app = Flask(__name__)
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_PATH = os.environ.get("MODEL_PATH", os.path.join(BASE_DIR, "model", "model.pkl"))
+# Загрузка модели
+MODEL_PATH = os.getenv("MODEL_PATH", "model/model.pkl")
 with open(MODEL_PATH, "rb") as f:
     model = pickle.load(f)
 
-DB_CONFIG = {
-    "host": os.environ.get("DB_HOST", "10.10.10.101"),
-    "dbname": os.environ.get("DB_NAME", "ml_predictions"),
-    "user": os.environ.get("DB_USER", "ml_app"),
-    "password": os.environ.get("DB_PASSWORD", "CHANGE_ME"),
-    "sslmode": os.environ.get("DB_SSLMODE", "require"),
-}
+# Метрики
+PREDICTIONS_TOTAL = Counter(
+    "ml_predictions_total", "Total number of predictions",
+    ["model_version", "predicted_class"]
+)
+PREDICTION_LATENCY = Histogram(
+    "ml_prediction_latency_seconds", "Prediction latency in seconds"
+)
+DB_ERRORS_TOTAL = Counter("ml_db_errors_total", "Total number of DB write errors")
+MODEL_INFO = Gauge(
+    "ml_model_info", "Model info", ["version"]
+)
+MODEL_INFO.labels(version="v1.0").set(1)
 
+def get_db():
+    return psycopg2.connect(
+        host=os.getenv("DB_HOST", "10.10.10.101"),
+        dbname=os.getenv("DB_NAME", "ml_predictions"),
+        user=os.getenv("DB_USER", "ml_app"),
+        password=os.getenv("DB_PASSWORD", "StrongPassword"),
+        sslmode=os.getenv("DB_SSLMODE", "require")
+    )
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "model_version": "v1.0"})
-
+    return jsonify({"status": "ok"})
 
 @app.route("/predict", methods=["POST"])
 def predict():
+    start = time.time()
     data = request.get_json(force=True)
-    if not data or "features" not in data:
-        return jsonify({"error": "JSON must contain 'features' key"}), 400
+    features = data.get("features", [])
+    if not features:
+        return jsonify({"error": "No features provided"}), 400
 
-    features = data["features"]
-    if len(features) != 13:
-        return jsonify({"error": "Expected exactly 13 features (Wine dataset)"}), 400
+    pred = model.predict([features])[0]
+    proba = max(model.predict_proba([features])[0])
+    result = {"class": int(pred), "probability": float(proba)}
 
-    prediction = int(model.predict([features])[0])
+    PREDICTION_LATENCY.observe(time.time() - start)
+    PREDICTIONS_TOTAL.labels(model_version="v1.0", predicted_class=str(pred)).inc()
 
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = get_db()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO predictions (input_data, prediction, model_version) "
-            "VALUES (%s, %s, %s)",
-            (json.dumps(features), str(prediction), "v1.0"),
+            "INSERT INTO predictions (input_data, prediction, model_version) VALUES (%s, %s, %s)",
+            (json.dumps({"features": features}), json.dumps(result), "v1.0")
         )
         conn.commit()
         cur.close()
         conn.close()
-        db_status = "saved"
     except Exception as e:
-        db_status = "error: " + str(e)
+        DB_ERRORS_TOTAL.inc()
+        app.logger.error(f"DB error: {e}")
 
-    return jsonify({"prediction": prediction, "db_status": db_status})
+    return jsonify(result)
 
+@app.route("/metrics", methods=["GET"])
+def metrics():
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
