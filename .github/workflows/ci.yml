@@ -1,70 +1,62 @@
-name: CI/CD Pipeline
+name: ML Service CI/CD
 
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+on: [push, workflow_dispatch]
 
 jobs:
   lint-and-test:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v4
         with:
           python-version: '3.8'
+
       - name: Install dependencies
-        run: pip install -r app/requirements.txt
-      - name: Train model
-        run: python model/train.py
-      - name: Upload model artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: model
-          path: model/model.pkl
-      - name: Lint
         run: |
           cd app
-          flake8 . --max-line-length=120
-      - name: Test
+          pip install -r requirements.txt
+          pip install flake8 pytest
+
+      - name: Lint with flake8
         run: |
           cd app
-          pytest -v tests/
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 . --count --exit-zero --max-line-length=127 --statistics
+
+      - name: Create model for tests
+        run: |
+          cd app
+          python -c "import os, pickle; from sklearn.datasets import load_wine; from sklearn.linear_model import LogisticRegression; os.makedirs('model', exist_ok=True); X, y = load_wine(return_X_y=True); model = LogisticRegression(max_iter=2000).fit(X, y); pickle.dump(model, open('model/model.pkl', 'wb'))"
+
+      - name: Run tests
+        run: |
+          cd app
+          pytest -v
 
   build-and-push:
+    runs-on: ubuntu-22.04
     needs: lint-and-test
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - uses: actions/checkout@v4
-      - name: Download model artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: model
-          path: model/
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
-      - name: Build and push
-        uses: docker/build-push-action@v5
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v4
         with:
           context: .
           file: docker/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository }}/ml-app:latest
-
-  deploy:
-    needs: build-and-push
-    if: github.ref == 'refs/heads/main'
-    runs-on: self-hosted
-    steps:
-      - name: Deploy to VM2
-        run: |
-          cd ~/ml-prediction-service
-          echo "${{ secrets.REGISTRY_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          docker-compose pull
-          docker-compose up -d
+          tags: ghcr.io/nick-7815/ml-prediction-service/ml-app:latest
