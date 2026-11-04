@@ -1,6 +1,11 @@
 from flask import Flask, request, jsonify, Response
-import psycopg2, json, os, pickle, time
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+import psycopg2
+import json
+import os
+import pickle
+import time
+from prometheus_client import Counter, Histogram, Gauge
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 app = Flask(__name__)
 
@@ -17,11 +22,14 @@ PREDICTIONS_TOTAL = Counter(
 PREDICTION_LATENCY = Histogram(
     "ml_prediction_latency_seconds", "Prediction latency in seconds"
 )
-DB_ERRORS_TOTAL = Counter("ml_db_errors_total", "Total number of DB write errors")
+DB_ERRORS_TOTAL = Counter(
+    "ml_db_errors_total", "Total number of DB write errors"
+)
 MODEL_INFO = Gauge(
     "ml_model_info", "Model info", ["version"]
 )
 MODEL_INFO.labels(version="v1.0").set(1)
+
 
 def get_db():
     return psycopg2.connect(
@@ -32,9 +40,11 @@ def get_db():
         sslmode=os.getenv("DB_SSLMODE", "require")
     )
 
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
+
 
 @app.route("/predict", methods=["POST"])
 def predict():
@@ -49,13 +59,16 @@ def predict():
     result = {"class": int(pred), "probability": float(proba)}
 
     PREDICTION_LATENCY.observe(time.time() - start)
-    PREDICTIONS_TOTAL.labels(model_version="v1.0", predicted_class=str(pred)).inc()
+    PREDICTIONS_TOTAL.labels(
+        model_version="v1.0", predicted_class=str(pred)
+    ).inc()
 
     try:
         conn = get_db()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO predictions (input_data, prediction, model_version) VALUES (%s, %s, %s)",
+            "INSERT INTO predictions (input_data, prediction, "
+            "model_version) VALUES (%s, %s, %s)",
             (json.dumps({"features": features}), json.dumps(result), "v1.0")
         )
         conn.commit()
@@ -67,9 +80,11 @@ def predict():
 
     return jsonify(result)
 
+
 @app.route("/metrics", methods=["GET"])
 def metrics():
     return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
