@@ -1,0 +1,67 @@
+---
+- name: Configure App server (VM2)
+  hosts: app
+  become: true
+  tasks:
+    - name: Check Docker is available
+      command: docker --version
+      register: docker_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install Docker (only if missing)
+      apt:
+        name: docker.io
+        state: present
+      when: docker_check.rc != 0
+
+    - name: Check docker-compose is available
+      command: docker-compose --version
+      register: compose_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install docker-compose (only if missing)
+      apt:
+        name: docker-compose
+        state: present
+      when: compose_check.rc != 0
+
+    - name: Ensure Docker service is running and enabled
+      service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Check .env exists (secrets stay out of git)
+      stat:
+        path: /home/student/ml-prediction-service/.env
+      register: env_file
+
+    - name: Fail if .env is missing
+      fail:
+        msg: ".env not found in /home/student/ml-prediction-service"
+      when: not env_file.stat.exists
+
+    - name: Remove stopped containers (cleanup)
+      become: false
+      command: docker container prune -f
+
+    - name: Pull latest app image from ghcr.io
+      become: false
+      command: docker-compose pull
+      args:
+        chdir: /home/student/ml-prediction-service
+
+    - name: Deploy app container via docker-compose
+      become: false
+      command: docker-compose up -d
+      args:
+        chdir: /home/student/ml-prediction-service
+
+    - name: Wait until app answers on port 5000
+      become: false
+      wait_for:
+        port: 5000
+        delay: 5
+        timeout: 90

@@ -1,0 +1,50 @@
+---
+- name: Configure DB server (VM1)
+  hosts: db
+  become: yes
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install PostgreSQL
+      apt:
+        name:
+          - postgresql
+          - postgresql-contrib
+        state: present
+
+    - name: Ensure PostgreSQL is running and enabled
+      service:
+        name: postgresql
+        state: started
+        enabled: yes
+
+    - name: Create ml_predictions database
+      become_user: postgres
+      shell: |
+        psql -tc "SELECT 1 FROM pg_database WHERE datname = 'ml_predictions'" | grep -q 1 || psql -c "CREATE DATABASE ml_predictions;"
+      args:
+        executable: /bin/bash
+
+    - name: Create ml_app user
+      become_user: postgres
+      shell: |
+        psql -tc "SELECT 1 FROM pg_roles WHERE rolname = 'ml_app'" | grep -q 1 || psql -c "CREATE USER ml_app WITH ENCRYPTED PASSWORD 'StrongPassword';"
+      args:
+        executable: /bin/bash
+
+    - name: Grant privileges on database
+      become_user: postgres
+      shell: psql -c "GRANT ALL PRIVILEGES ON DATABASE ml_predictions TO ml_app;"
+
+    - name: Copy DB init SQL
+      copy:
+        src: ../db/init.sql
+        dest: /tmp/init.sql
+
+    - name: Run DB init SQL
+      become_user: postgres
+      shell: psql -d ml_predictions -f /tmp/init.sql
+      register: sql_result
+      changed_when: "'CREATE TABLE' in sql_result.stdout"

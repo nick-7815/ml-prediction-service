@@ -1,49 +1,36 @@
 from flask import Flask, request, jsonify, Response
-import psycopg2
 import json
 import os
 import pickle
 import time
-from prometheus_client import Counter, Histogram, Gauge
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+import urllib.request
+import urllib.error
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 app = Flask(__name__)
 
-# Загрузка модели
 MODEL_PATH = os.getenv("MODEL_PATH", "model/model.pkl")
 with open(MODEL_PATH, "rb") as f:
     model = pickle.load(f)
 
+LOGGER_URL = os.getenv("LOGGER_URL", "http://logger-service:5001/log")
+
 # Метрики
 PREDICTIONS_TOTAL = Counter(
-    "ml_predictions_total", "Total number of predictions",
+    "ml_predictions_total", "Total predictions",
     ["model_version", "predicted_class"]
 )
 PREDICTION_LATENCY = Histogram(
-    "ml_prediction_latency_seconds", "Prediction latency in seconds"
+    "ml_prediction_latency_seconds", "Prediction latency"
 )
-DB_ERRORS_TOTAL = Counter(
-    "ml_db_errors_total", "Total number of DB write errors"
-)
-MODEL_INFO = Gauge(
-    "ml_model_info", "Model info", ["version"]
-)
+LOGGER_ERRORS_TOTAL = Counter("ml_logger_errors_total", "Logger service errors")
+MODEL_INFO = Gauge("ml_model_info", "Model info", ["version"])
 MODEL_INFO.labels(version="v1.0").set(1)
-
-
-def get_db():
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST", "10.10.10.101"),
-        dbname=os.getenv("DB_NAME", "ml_predictions"),
-        user=os.getenv("DB_USER", "ml_app"),
-        password=os.getenv("DB_PASSWORD", "StrongPassword"),
-        sslmode=os.getenv("DB_SSLMODE", "require")
-    )
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "service": "prediction"})
 
 
 @app.route("/predict", methods=["POST"])
@@ -63,20 +50,27 @@ def predict():
         model_version="v1.0", predicted_class=str(pred)
     ).inc()
 
+    # Вызов logger-service по HTTP (вместо прямой записи в БД)
+    payload = json.dumps({
+        "input_data": {"features": features},
+        "prediction": result,
+        "model_version": "v1.0",
+    }).encode("utf-8")
+
     try:
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO predictions (input_data, prediction, "
-            "model_version) VALUES (%s, %s, %s)",
-            (json.dumps({"features": features}), json.dumps(result), "v1.0")
+        req = urllib.request.Request(
+            LOGGER_URL,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
-        conn.commit()
-        cur.close()
-        conn.close()
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status >= 400:
+                LOGGER_ERRORS_TOTAL.inc()
+                app.logger.warning(f"Logger returned {resp.status}")
     except Exception as e:
-        DB_ERRORS_TOTAL.inc()
-        app.logger.error(f"DB error: {e}")
+        LOGGER_ERRORS_TOTAL.inc()
+        app.logger.error(f"Logger service error: {e}")
 
     return jsonify(result)
 

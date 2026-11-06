@@ -1,0 +1,39 @@
+groups:
+  - name: ml-service-alerts
+    interval: 30s
+    rules:
+      - alert: MLServiceDown
+        expr: up{job="ml-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ML-сервис недоступен"
+          description: "Prometheus не может получить метрики с ml-app более 1 минуты."
+
+      - alert: HighPredictionLatency
+        expr: histogram_quantile(0.95, rate(ml_prediction_latency_seconds_bucket[5m])) > 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Высокая задержка предсказаний"
+          description: "95-й процентиль задержки превышает 1 секунду."
+
+      - alert: DBPredictionErrors
+        expr: increase(ml_db_errors_total[5m]) > 3
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ошибки записи в БД"
+          description: "За последние 5 минут более 3 ошибок записи предсказаний в БД."
+
+      - alert: NoPredictionsReceived
+        expr: rate(ml_predictions_total[10m]) == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Нет предсказаний за 10 минут"
+          description: "Сервис не получал запросов на предсказание в течение 10 минут."

@@ -7,3 +7,10 @@ venv/
 *.log
 model/*.pkl
 !model/.gitkeep
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+terraform.tfvars
+crash.log
